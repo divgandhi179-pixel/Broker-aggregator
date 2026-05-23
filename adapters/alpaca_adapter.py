@@ -5,7 +5,7 @@ class AlpacaAdapter(BrokerAdapter):
     def __init__(self, api_key:str, secret_key:str):
         self.api_key = api_key
         self.secret_key= secret_key
-        self.broker_name = "aplaca"
+        self.broker_name = "alpaca"
 
     async def get_quote(self,symbol: str) -> dict:
         return{
