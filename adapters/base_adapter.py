@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 
 class BrokerAdapter(ABC):
     @abstractmethod
-    async def get_quotes(self, symbol: str) -> dict:
+    async def get_quote(self, symbol: str) -> dict:
         """Return price data for a symbol"""
         pass
 
