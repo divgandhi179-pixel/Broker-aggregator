@@ -3,28 +3,28 @@ import random
 from adapters.base_adapter import BrokerAdapter
 
 
-class AlpacaAdapter(BrokerAdapter):
+class GrowwAdapter(BrokerAdapter):
 
-    def __init__(self, api_key: str, secret_key: str):
+    def __init__(self, api_key: str, client_id: str):
         self.api_key = api_key
-        self.secret_key = secret_key
-        self.broker_name = "Alpaca"
+        self.client_id = client_id
+        self.broker_name = "Groww"
         # Initial mock holdings
         self.holdings = [
-            {"symbol": "AAPL", "qty": 5, "current_price": 185.50},
-            {"symbol": "TSLA", "qty": 3, "current_price": 260.00},
+            {"symbol": "RELIANCE", "qty": 8, "current_price": 2400.00},
+            {"symbol": "HDFCBANK", "qty": 12, "current_price": 1600.00},
         ]
 
     async def get_quote(self, symbol: str) -> dict:
         symbol = symbol.upper()
         prices = {
-            "AAPL": 185.40,
-            "TSLA": 250.00,
-            "MSFT": 420.00,
-            "NVDA": 120.00,
-            "GOOG": 175.00
+            "INFY": 1500.00,
+            "TCS": 3200.00,
+            "RELIANCE": 2400.00,
+            "HDFCBANK": 1600.00,
+            "TATAMOTORS": 950.00
         }
-        ltp = prices.get(symbol, 150.00)
+        ltp = prices.get(symbol, 400.00)
         
         # Add tiny random fluctuation (+/- 0.2%)
         ltp = round(ltp * (1 + random.uniform(-0.002, 0.002)), 2)
@@ -32,9 +32,9 @@ class AlpacaAdapter(BrokerAdapter):
         return {
             "symbol": symbol,
             "ltp": ltp,
-            "bid": round(ltp - 0.10, 2),
-            "ask": round(ltp + 0.10, 2),
-            "volume": random.randint(500000, 2000000)
+            "bid": round(ltp - 1.00, 2),
+            "ask": round(ltp + 1.00, 2),
+            "volume": random.randint(150000, 600000),
         }
 
     async def place_order(
@@ -54,7 +54,6 @@ class AlpacaAdapter(BrokerAdapter):
         
         if side == "BUY":
             if holding:
-                # Update quantity and current price
                 holding["qty"] += qty
                 holding["current_price"] = price
             else:
@@ -75,7 +74,7 @@ class AlpacaAdapter(BrokerAdapter):
                 
         return {
             "broker": self.broker_name,
-            "order_id": f"ALP{int(time.time() * 1000) % 1000000:06d}",
+            "order_id": f"GRW{int(time.time() * 1000) % 1000000:06d}",
             "symbol": symbol,
             "qty": qty,
             "side": side,
@@ -83,12 +82,12 @@ class AlpacaAdapter(BrokerAdapter):
         }
 
     async def get_positions(self) -> list:
-        # Map holdings to positions (showing simulated average cost 5% below current price)
+        # Map holdings to positions (showing simulated average cost 4% below current price)
         return [
             {
                 "symbol": h["symbol"],
                 "qty": h["qty"],
-                "avg_price": round(h["current_price"] * 0.95, 2)
+                "avg_price": round(h["current_price"] * 0.96, 2)
             }
             for h in self.holdings
         ]

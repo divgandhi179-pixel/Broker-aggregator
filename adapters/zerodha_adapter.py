@@ -1,27 +1,80 @@
+import time
+import random
 from adapters.base_adapter import BrokerAdapter
 
 
 class ZerodhaAdapter(BrokerAdapter):
+
     def __init__(self, api_key: str, access_token: str):
         self.api_key = api_key
         self.access_token = access_token
         self.broker_name = "Zerodha"
+        # Initial mock holdings
+        self.holdings = [
+            {"symbol": "INFY", "qty": 10, "current_price": 1500.00},
+            {"symbol": "TCS", "qty": 5, "current_price": 3200.00},
+        ]
 
     async def get_quote(self, symbol: str) -> dict:
+        symbol = symbol.upper()
+        prices = {
+            "INFY": 1500.00,
+            "TCS": 3200.00,
+            "RELIANCE": 2400.00,
+            "HDFCBANK": 1600.00,
+            "TATAMOTORS": 950.00
+        }
+        ltp = prices.get(symbol, 500.00)
+        
+        # Add tiny random fluctuation (+/- 0.2%)
+        ltp = round(ltp * (1 + random.uniform(-0.002, 0.002)), 2)
+        
         return {
             "symbol": symbol,
-            "ltp": 2150.00,
-            "bid": 2150.00,
-            "ask": 2150.00,
-            "volume": 123456,
+            "ltp": ltp,
+            "bid": round(ltp - 1.00, 2),
+            "ask": round(ltp + 1.00, 2),
+            "volume": random.randint(100000, 500000),
         }
 
     async def place_order(
         self, symbol: str, qty: int, side: str, order_type: str
     ) -> dict:
+        symbol = symbol.upper()
+        side = side.upper()
+        
+        if side not in ["BUY", "SELL"]:
+            raise ValueError("Side must be BUY or SELL")
+            
+        quote = await self.get_quote(symbol)
+        price = quote["ltp"]
+        
+        # Find if holding exists
+        holding = next((h for h in self.holdings if h["symbol"] == symbol), None)
+        
+        if side == "BUY":
+            if holding:
+                holding["qty"] += qty
+                holding["current_price"] = price
+            else:
+                self.holdings.append({
+                    "symbol": symbol,
+                    "qty": qty,
+                    "current_price": price
+                })
+        elif side == "SELL":
+            if not holding:
+                raise ValueError(f"No holding found for {symbol} to sell.")
+            if holding["qty"] < qty:
+                raise ValueError(f"Insufficient quantity. Holding {holding['qty']} but trying to sell {qty}.")
+            
+            holding["qty"] -= qty
+            if holding["qty"] == 0:
+                self.holdings.remove(holding)
+                
         return {
             "broker": self.broker_name,
-            "order_id": "ZER123456",
+            "order_id": f"ZER{int(time.time() * 1000) % 1000000:06d}",
             "symbol": symbol,
             "qty": qty,
             "side": side,
@@ -29,17 +82,20 @@ class ZerodhaAdapter(BrokerAdapter):
         }
 
     async def get_positions(self) -> list:
+        # Map holdings to positions (showing simulated average cost 3% below current price)
         return [
-            {"symbol": "INFY", "qty": 10, "avg_price": 1500},
-            {"symbol": "TCS", "qty": 10, "avg_price": 3200},
+            {
+                "symbol": h["symbol"],
+                "qty": h["qty"],
+                "avg_price": round(h["current_price"] * 0.97, 2)
+            }
+            for h in self.holdings
         ]
 
     async def get_portfolio(self) -> dict:
+        total_value = sum(h["qty"] * h["current_price"] for h in self.holdings)
         return {
             "broker": self.broker_name,
-            "total_value": 310000.00,
-            "holdings": [
-                {"symbol": "INFY", "qty": 10, "current_price": 15000.00},
-                {"symbol": "TCS", "qty": 5, "current_price": 1600.00},
-            ],
+            "total_value": round(total_value, 2),
+            "holdings": self.holdings,
         }

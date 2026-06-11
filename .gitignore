@@ -3,3 +3,8 @@ __pycache__/
 .env
 *.pyc
 .DS_Store
+.vercel
+registered_brokers.json
+order_history.json
+ipo_applications.json
+
