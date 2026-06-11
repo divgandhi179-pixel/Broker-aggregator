@@ -10,7 +10,21 @@ let globalChart = null;
 const portfolioCharts = {};
 let initialNetWorth = null;
 
-// DOM Elements
+// DOM Elements - Auth Screen
+const authContainer = document.getElementById('auth-container');
+const appContainer = document.getElementById('app-container');
+const loginForm = document.getElementById('login-form');
+const signupForm = document.getElementById('signup-form');
+const loginError = document.getElementById('login-error');
+const signupError = document.getElementById('signup-error');
+const tabLoginBtn = document.getElementById('tab-login-btn');
+const tabSignupBtn = document.getElementById('tab-signup-btn');
+const logoutBtn = document.getElementById('logout-btn');
+const userBadgeDisplay = document.getElementById('user-badge-display');
+const userAvatarLbl = document.getElementById('user-avatar-lbl');
+const userNameLbl = document.getElementById('user-name-lbl');
+
+// DOM Elements - Dashboard
 const connectBrokerBtn = document.getElementById('connect-broker-btn');
 const emptyStateConnectBtn = document.getElementById('empty-state-connect-btn');
 const connectModal = document.getElementById('connect-modal');
@@ -40,7 +54,6 @@ const navIpoBtn = document.getElementById('nav-ipo-btn');
 const dashboardView = document.getElementById('dashboard-view');
 const ipoView = document.getElementById('ipo-view');
 
-
 // Stats Elements
 const totalNetWorthEl = document.getElementById('total-net-worth');
 const activeBrokersCountEl = document.getElementById('active-brokers-count');
@@ -69,23 +82,76 @@ let reconnectAttempts = 0;
 let isVercelFallback = false;
 let pollingInterval = null;
 
+// Auth Header Helper
+function getAuthHeaders() {
+    const token = localStorage.getItem('token');
+    return {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+    };
+}
+
+// Check if response is Unauthorized (401)
+async function handleApiResponse(response) {
+    if (response.status === 401) {
+        showToast('Session expired. Please login again.', 'error');
+        handleLogout();
+        throw new Error('Unauthorized');
+    }
+    return response;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
-    
-    // Auto-detect Vercel serverless environment to use HTTP polling directly
-    const isVercel = window.location.hostname.includes('vercel.app');
-    
-    if (isVercel) {
-        console.log("Running on Vercel. Using HTTP polling directly.");
-        isVercelFallback = true;
-        fetchData();
-        fetchIPOs();
-        startPolling();
-    } else {
-        connectWebSocket();
-        fetchIPOs();
-    }
+    checkAuth();
 });
+
+// Authentication Gatekeeper
+function checkAuth() {
+    const token = localStorage.getItem('token');
+    const username = localStorage.getItem('username');
+    
+    if (token) {
+        // Authenticated: Show Dashboard, Hide Auth
+        authContainer.style.display = 'none';
+        appContainer.style.display = 'flex';
+        
+        // Update user badge
+        if (username) {
+            userBadgeDisplay.style.display = 'flex';
+            userAvatarLbl.textContent = username.substring(0, 1).toUpperCase();
+            userNameLbl.textContent = username;
+        }
+        
+        // Connect services
+        const isVercel = window.location.hostname.includes('vercel.app');
+        if (isVercel) {
+            console.log("Running on Vercel. Using HTTP polling directly.");
+            isVercelFallback = true;
+            fetchData();
+            fetchIPOs();
+            startPolling();
+        } else {
+            connectWebSocket();
+            fetchIPOs();
+        }
+    } else {
+        // Unauthenticated: Show Auth, Hide Dashboard
+        authContainer.style.display = 'flex';
+        appContainer.style.display = 'none';
+        userBadgeDisplay.style.display = 'none';
+        
+        // Stop connections
+        if (ws) {
+            ws.close();
+            ws = null;
+        }
+        if (pollingInterval) {
+            clearInterval(pollingInterval);
+            pollingInterval = null;
+        }
+    }
+}
 
 function startPolling() {
     if (pollingInterval) clearInterval(pollingInterval);
@@ -93,8 +159,11 @@ function startPolling() {
 }
 
 function connectWebSocket() {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/ws`;
+    const wsUrl = `${protocol}//${window.location.host}/api/ws?token=${encodeURIComponent(token)}`;
     
     console.log(`Connecting to WebSocket: ${wsUrl}`);
     ws = new WebSocket(wsUrl);
@@ -153,6 +222,16 @@ function connectWebSocket() {
         console.log(`WebSocket disconnected. Code: ${e.code}, Reason: ${e.reason}`);
         updateConnectionIndicator(false);
         
+        // If token is missing, do not attempt reconnect
+        if (!localStorage.getItem('token')) return;
+        
+        // Unauthorized ws rejection code
+        if (e.code === 1008) {
+            showToast('Session expired. Please log in again.', 'error');
+            handleLogout();
+            return;
+        }
+
         if (reconnectAttempts > 3) {
             console.warn("WebSocket reconnection limit reached. Falling back to HTTP polling.");
             isVercelFallback = true;
@@ -173,9 +252,32 @@ function connectWebSocket() {
     };
 }
 
-
 // Event Listeners Setup
 function setupEventListeners() {
+    // Auth Tab switching
+    tabLoginBtn.addEventListener('click', () => {
+        tabLoginBtn.classList.add('active');
+        tabSignupBtn.classList.remove('active');
+        loginForm.style.display = 'block';
+        signupForm.style.display = 'none';
+        loginError.style.display = 'none';
+        signupError.style.display = 'none';
+    });
+
+    tabSignupBtn.addEventListener('click', () => {
+        tabSignupBtn.classList.add('active');
+        tabLoginBtn.classList.remove('active');
+        signupForm.style.display = 'block';
+        loginForm.style.display = 'none';
+        loginError.style.display = 'none';
+        signupError.style.display = 'none';
+    });
+
+    // Auth Form submissions
+    loginForm.addEventListener('submit', handleLoginSubmit);
+    signupForm.addEventListener('submit', handleSignupSubmit);
+    logoutBtn.addEventListener('click', handleLogout);
+
     // Modal controls
     const openModal = () => {
         connectModal.style.display = 'flex';
@@ -229,6 +331,97 @@ function setupEventListeners() {
     ipoModalLotsInput.addEventListener('input', updateIpoModalSummary);
     ipoModalPriceInput.addEventListener('input', updateIpoModalSummary);
     ipoApplyForm.addEventListener('submit', handleIPOApplicationSubmit);
+}
+
+// Auth Actions
+
+async function handleLoginSubmit(e) {
+    e.preventDefault();
+    loginError.style.display = 'none';
+    const email = document.getElementById('login-email').value;
+    const password = document.getElementById('login-password').value;
+
+    try {
+        const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        
+        if (res.ok) {
+            localStorage.setItem('token', data.access_token);
+            localStorage.setItem('username', data.user.username);
+            localStorage.setItem('email', data.user.email);
+            showToast('Logged in successfully!');
+            checkAuth();
+        } else {
+            loginError.textContent = data.detail || 'Login failed. Please check credentials.';
+            loginError.style.display = 'block';
+        }
+    } catch (err) {
+        console.error('Login error:', err);
+        loginError.textContent = 'Server connection issue.';
+        loginError.style.display = 'block';
+    }
+}
+
+async function handleSignupSubmit(e) {
+    e.preventDefault();
+    signupError.style.display = 'none';
+    const username = document.getElementById('signup-username').value;
+    const email = document.getElementById('signup-email').value;
+    const password = document.getElementById('signup-password').value;
+
+    try {
+        const res = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, username, password })
+        });
+        const data = await res.json();
+        
+        if (res.ok) {
+            localStorage.setItem('token', data.access_token);
+            localStorage.setItem('username', data.user.username);
+            localStorage.setItem('email', data.user.email);
+            showToast('Account created successfully!');
+            checkAuth();
+        } else {
+            signupError.textContent = data.detail || 'Registration failed. Try again.';
+            signupError.style.display = 'block';
+        }
+    } catch (err) {
+        console.error('Signup error:', err);
+        signupError.textContent = 'Server connection issue.';
+        signupError.style.display = 'block';
+    }
+}
+
+function handleLogout() {
+    localStorage.removeItem('token');
+    localStorage.removeItem('username');
+    localStorage.removeItem('email');
+    
+    // Clear state
+    activeBrokers = [];
+    portfolios = [];
+    orderHistory = [];
+    ipos = [];
+    ipoApplications = [];
+    initialNetWorth = null;
+    
+    // Destroy charts
+    if (globalChart) {
+        globalChart.destroy();
+        globalChart = null;
+    }
+    Object.keys(portfolioCharts).forEach(broker => {
+        portfolioCharts[broker].destroy();
+        delete portfolioCharts[broker];
+    });
+    
+    checkAuth();
 }
 
 // Show Toast Notification
@@ -314,9 +507,9 @@ async function fetchData() {
         
         // Fetch portfolios and active brokers
         const [brokersRes, portfoliosRes, historyRes] = await Promise.all([
-            fetch('/api/brokers').then(r => r.json()),
-            fetch('/api/portfolios').then(r => r.json()),
-            fetch('/api/history').then(r => r.json())
+            fetch('/api/brokers', { headers: getAuthHeaders() }).then(handleApiResponse).then(r => r.json()),
+            fetch('/api/portfolios', { headers: getAuthHeaders() }).then(handleApiResponse).then(r => r.json()),
+            fetch('/api/history', { headers: getAuthHeaders() }).then(handleApiResponse).then(r => r.json())
         ]);
         
         activeBrokers = portfoliosRes.summary?.active_count > 0 ? brokersRes.active : [];
@@ -327,8 +520,10 @@ async function fetchData() {
         renderDashboard();
     } catch (error) {
         console.error('Error fetching data:', error);
-        updateConnectionIndicator(false);
-        showToast('Failed to fetch data from API', 'error');
+        if (error.message !== 'Unauthorized') {
+            updateConnectionIndicator(false);
+            showToast('Failed to fetch data from API', 'error');
+        }
     } finally {
         setLoadingState(false);
     }
@@ -338,16 +533,15 @@ async function fetchData() {
 async function fetchLiveQuotesAndValues() {
     if (activeBrokers.length === 0) return;
     try {
-        const portfoliosRes = await fetch('/api/portfolios').then(r => r.json());
+        const res = await fetch('/api/portfolios', { headers: getAuthHeaders() });
+        await handleApiResponse(res);
+        const portfoliosRes = await res.json();
         portfolios = portfoliosRes.portfolios || [];
         
-        // Soft-update the values in the UI (without redrawing the whole DOM structure, which breaks inputs/modals)
+        // Soft-update the values in the UI
         updateStatValues(portfoliosRes.summary);
-        
-        // Update Chart data objects dynamically for smooth transitions
         updateAllCharts();
         
-        // Update specific text values in holdings table
         portfolios.forEach(p => {
             const valuationAmtEl = document.getElementById(`val-${p.broker}`);
             if (valuationAmtEl) {
@@ -370,7 +564,6 @@ async function fetchLiveQuotesAndValues() {
             }
         });
         
-        // Also update quick trade quote if shown
         fetchQuickQuote();
         
     } catch (e) {
@@ -460,12 +653,12 @@ function updateStatValues(summary) {
     });
     totalHoldingsCountEl.textContent = uniqueAssets.size;
 
-    // Reset session baseline if no active portfolios exist
+    // Reset baseline if no active portfolios
     if (portfolios.length === 0) {
         initialNetWorth = null;
     }
 
-    // Dynamically calculate and show session trend
+    // Dynamically calculate session trend
     if (initialNetWorth === null || initialNetWorth === 0) {
         if (currentNetWorth > 0) {
             initialNetWorth = currentNetWorth;
@@ -546,7 +739,6 @@ function createPortfolioCard(portfolio) {
     } else {
         const totalValStr = formatCurrency(portfolio.total_value, brokerName);
         
-        // Holdings lines
         let holdingsHTML = '';
         if (portfolio.holdings && portfolio.holdings.length > 0) {
             portfolio.holdings.forEach(h => {
@@ -617,7 +809,6 @@ function createPortfolioCard(portfolio) {
         `;
     }
 
-    // Hook buttons inside card
     if (!portfolio.error) {
         card.querySelector('.btn-quick-trade').addEventListener('click', () => {
             tradeBrokerSelect.value = brokerName;
@@ -640,7 +831,6 @@ function renderPortfolioDonut(portfolio) {
     const ctx = document.getElementById(canvasId)?.getContext('2d');
     if (!ctx) return;
 
-    // Destroy existing chart if any
     if (portfolioCharts[brokerName]) {
         portfolioCharts[brokerName].destroy();
     }
@@ -648,7 +838,6 @@ function renderPortfolioDonut(portfolio) {
     const labels = portfolio.holdings?.map(h => h.symbol) || [];
     const data = portfolio.holdings?.map(h => h.qty * h.current_price) || [];
     
-    // Fallback if empty holdings
     if (labels.length === 0) {
         labels.push("Cash");
         data.push(1);
@@ -695,15 +884,10 @@ function renderGlobalAllocationChart() {
         globalChart.destroy();
     }
 
-    // Accumulate holdings across all brokers
     const combinedData = {};
     portfolios.forEach(p => {
         p.holdings?.forEach(h => {
             const sym = h.symbol.toUpperCase();
-            // Standardize conversion: in real app, we convert currencies (USD vs INR).
-            // For mock, since Zerodha/Groww use INR (approx 1500 per share) and Alpaca uses USD (approx 185 per share),
-            // let's divide Indian stocks by 80 to show a normalized USD allocation, or just sum raw points for demonstration.
-            // Let's convert Indian stocks (Zerodha/Groww) to USD at 1 USD = 80 INR for a proper unified asset chart!
             const conversionRate = (p.broker === 'Zerodha' || p.broker === 'Groww' || p.broker === 'Motilal Oswal') ? 0.0125 : 1.0;
             const assetValInUSD = h.qty * h.current_price * conversionRate;
             
@@ -757,19 +941,16 @@ function renderGlobalAllocationChart() {
     });
 }
 
-// Update charts with new values dynamically (for smooth visual adjustments)
 function updateAllCharts() {
-    // Update individual portfolio charts
     portfolios.forEach(p => {
         const chart = portfolioCharts[p.broker];
         if (chart) {
             const data = p.holdings?.map(h => h.qty * h.current_price) || [1];
             chart.data.datasets[0].data = data;
-            chart.update('none'); // Update without animation to make it smooth and high-performance
+            chart.update('none');
         }
     });
     
-    // Update global chart
     if (globalChart) {
         const combinedData = {};
         portfolios.forEach(p => {
@@ -826,7 +1007,6 @@ async function handleConnectBroker(e) {
     e.preventDefault();
     const broker = brokerSelect.value;
     
-    // Build credentials payload based on form inputs
     const credentials = {};
     if (broker === 'Zerodha') {
         credentials.api_key = document.getElementById('cred-api-key').value;
@@ -845,9 +1025,10 @@ async function handleConnectBroker(e) {
     try {
         const res = await fetch('/api/brokers', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
             body: JSON.stringify({ broker, credentials })
         });
+        await handleApiResponse(res);
         const data = await res.json();
         
         if (res.ok) {
@@ -860,8 +1041,10 @@ async function handleConnectBroker(e) {
             showToast(data.detail || 'Connection failed', 'error');
         }
     } catch (err) {
-        console.error('Error connecting broker:', err);
-        showToast('Server connection issue.', 'error');
+        if (err.message !== 'Unauthorized') {
+            console.error('Error connecting broker:', err);
+            showToast('Server connection issue.', 'error');
+        }
     }
 }
 
@@ -869,12 +1052,15 @@ async function handleConnectBroker(e) {
 async function handleDisconnectBroker(brokerName) {
     if (!confirm(`Are you sure you want to disconnect ${brokerName}?`)) return;
     try {
-        const res = await fetch(`/api/brokers/${brokerName}`, { method: 'DELETE' });
+        const res = await fetch(`/api/brokers/${brokerName}`, { 
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        });
+        await handleApiResponse(res);
         const data = await res.json();
         
         if (res.ok) {
             showToast(`${brokerName} disconnected.`);
-            // Clean up charts
             if (portfolioCharts[brokerName]) {
                 portfolioCharts[brokerName].destroy();
                 delete portfolioCharts[brokerName];
@@ -884,8 +1070,10 @@ async function handleDisconnectBroker(brokerName) {
             showToast(data.detail || 'Failed to disconnect', 'error');
         }
     } catch (err) {
-        console.error('Error disconnecting broker:', err);
-        showToast('Server connection issue.', 'error');
+        if (err.message !== 'Unauthorized') {
+            console.error('Error disconnecting broker:', err);
+            showToast('Server connection issue.', 'error');
+        }
     }
 }
 
@@ -900,7 +1088,10 @@ async function fetchQuickQuote() {
     }
 
     try {
-        const res = await fetch(`/api/quote/${broker}/${symbol}`);
+        const res = await fetch(`/api/quote/${broker}/${symbol}`, {
+            headers: getAuthHeaders()
+        });
+        await handleApiResponse(res);
         if (res.ok) {
             const data = await res.json();
             quoteDisplay.style.display = 'block';
@@ -936,39 +1127,39 @@ async function handleTrade(side) {
     try {
         const res = await fetch('/api/orders', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
             body: JSON.stringify({ broker, symbol, qty, side })
         });
+        await handleApiResponse(res);
         const data = await res.json();
         
         if (res.ok) {
             showToast(`Order Placed: ${side} ${qty} ${symbol} on ${broker}`);
             tradeForm.reset();
             quoteDisplay.style.display = 'none';
-            fetchData(); // Full refresh to reload holdings & allocations
+            fetchData();
         } else {
             showToast(data.detail || 'Trade execution failed', 'error');
         }
     } catch (err) {
-        console.error('Trade placing error:', err);
-        showToast('Server connection issue.', 'error');
+        if (err.message !== 'Unauthorized') {
+            console.error('Trade placing error:', err);
+            showToast('Server connection issue.', 'error');
+        }
     }
 }
 
 // Helpers
 function formatCurrency(val, broker) {
     if (typeof val !== 'number') return val;
-    // Format according to broker currency
     if (broker === 'Zerodha' || broker === 'Groww' || broker === 'Motilal Oswal') {
         return '₹' + val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
-    // Default USD formatting
     return '$' + val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function formatTime(timestampStr) {
     try {
-        // e.g. "2026-06-10 11:39:22" -> extract time or return direct
         const parts = timestampStr.split(' ');
         if (parts.length > 1) return parts[1];
         return timestampStr;
@@ -978,16 +1169,15 @@ function formatTime(timestampStr) {
 }
 
 function getHarmoniousColors(count) {
-    // Beautiful HSL colors
     const baseColors = [
-        'rgba(99, 102, 241, 0.8)',   // Indigo
-        'rgba(168, 85, 247, 0.8)',  // Purple
-        'rgba(14, 165, 233, 0.8)',   // Light blue
-        'rgba(16, 185, 129, 0.8)',   // Green
-        'rgba(244, 63, 94, 0.8)',    // Rose
-        'rgba(245, 158, 11, 0.8)',   // Amber
-        'rgba(6, 182, 212, 0.8)',    // Cyan
-        'rgba(236, 72, 153, 0.8)'    // Pink
+        'rgba(99, 102, 241, 0.8)',
+        'rgba(168, 85, 247, 0.8)',
+        'rgba(14, 165, 233, 0.8)',
+        'rgba(16, 185, 129, 0.8)',
+        'rgba(244, 63, 94, 0.8)',
+        'rgba(245, 158, 11, 0.8)',
+        'rgba(6, 182, 212, 0.8)',
+        'rgba(236, 72, 153, 0.8)'
     ];
     
     const colors = [];
@@ -1009,7 +1199,7 @@ function debounce(func, wait) {
     };
 }
 
-// IPO Portal Helper Functions
+// IPO Portal functions
 function switchTab(tab) {
     if (tab === 'dashboard') {
         navDashboardBtn.classList.add('active');
@@ -1028,14 +1218,16 @@ function switchTab(tab) {
 async function fetchIPOs() {
     try {
         const [iposRes, appsRes] = await Promise.all([
-            fetch('/api/ipos').then(r => r.json()),
-            fetch('/api/ipos/applications').then(r => r.json())
+            fetch('/api/ipos', { headers: getAuthHeaders() }).then(handleApiResponse).then(r => r.json()),
+            fetch('/api/ipos/applications', { headers: getAuthHeaders() }).then(handleApiResponse).then(r => r.json())
         ]);
         ipos = iposRes || [];
         ipoApplications = appsRes || [];
         renderIPOs();
     } catch (err) {
-        console.error('Error fetching IPOs:', err);
+        if (err.message !== 'Unauthorized') {
+            console.error('Error fetching IPOs:', err);
+        }
     }
 }
 
@@ -1204,9 +1396,10 @@ async function handleIPOApplicationSubmit(e) {
     try {
         const res = await fetch('/api/ipos/apply', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
             body: JSON.stringify({ broker, ipo_symbol, lots, bid_price, upi_id })
         });
+        await handleApiResponse(res);
         const data = await res.json();
         
         if (res.ok) {
@@ -1218,15 +1411,21 @@ async function handleIPOApplicationSubmit(e) {
             showToast(data.detail || 'IPO Application failed', 'error');
         }
     } catch (err) {
-        console.error('IPO Apply Error:', err);
-        showToast('Server connection issue.', 'error');
+        if (err.message !== 'Unauthorized') {
+            console.error('IPO Apply Error:', err);
+            showToast('Server connection issue.', 'error');
+        }
     }
 }
 
 async function cancelIPOBid(appId) {
     if (!confirm('Are you sure you want to cancel this IPO bid?')) return;
     try {
-        const res = await fetch(`/api/ipos/applications/${appId}`, { method: 'DELETE' });
+        const res = await fetch(`/api/ipos/applications/${appId}`, { 
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        });
+        await handleApiResponse(res);
         if (res.ok) {
             showToast('IPO bid cancelled.');
             fetchIPOs();
@@ -1235,8 +1434,9 @@ async function cancelIPOBid(appId) {
             showToast(data.detail || 'Failed to cancel IPO bid', 'error');
         }
     } catch (err) {
-        console.error('Error cancelling IPO bid:', err);
-        showToast('Server connection issue.', 'error');
+        if (err.message !== 'Unauthorized') {
+            console.error('Error cancelling IPO bid:', err);
+            showToast('Server connection issue.', 'error');
+        }
     }
 }
-

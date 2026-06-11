@@ -13,8 +13,69 @@
     <!-- Chart.js CDN -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body>
-    <div class="app-container">
+    <!-- Auth Page (shown when user is not logged in) -->
+    <div class="auth-container" id="auth-container" style="display: none;">
+        <div class="auth-card glass-panel animate-fade-in">
+            <div class="auth-brand">
+                <div class="logo-icon animate-pulse">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="url(#auth-logo-grad)" />
+                        <path d="M2 17L12 22L22 17" stroke="url(#auth-logo-grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M2 12L12 17L22 12" stroke="url(#auth-logo-grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                        <defs>
+                            <linearGradient id="auth-logo-grad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+                                <stop stop-color="#6366F1" />
+                                <stop offset="1" stop-color="#A855F7" />
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </div>
+                <h2>Apex Aggregator</h2>
+            </div>
+            
+            <p class="auth-subtitle">Unified Multi-Broker Portfolio Dashboard</p>
+            
+            <div class="auth-tabs">
+                <button type="button" class="auth-tab-btn active" id="tab-login-btn">Login</button>
+                <button type="button" class="auth-tab-btn" id="tab-signup-btn">Sign Up</button>
+            </div>
+
+            <!-- Login Form -->
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="login-email">Email Address</label>
+                    <input type="email" id="login-email" placeholder="name@example.com" required>
+                </div>
+                <div class="form-group">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" placeholder="••••••••" required>
+                </div>
+                <div class="error-msg" id="login-error" style="display: none;"></div>
+                <button type="submit" class="btn btn-primary btn-full">Sign In</button>
+            </form>
+
+            <!-- Signup Form -->
+            <form id="signup-form" style="display: none;">
+                <div class="form-group">
+                    <label for="signup-username">Username</label>
+                    <input type="text" id="signup-username" placeholder="e.g. janesmith" required>
+                </div>
+                <div class="form-group">
+                    <label for="signup-email">Email Address</label>
+                    <input type="email" id="signup-email" placeholder="name@example.com" required>
+                </div>
+                <div class="form-group">
+                    <label for="signup-password">Password</label>
+                    <input type="password" id="signup-password" placeholder="Min. 6 characters" required>
+                </div>
+                <div class="error-msg" id="signup-error" style="display: none;"></div>
+                <button type="submit" class="btn btn-primary btn-full">Create Account</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main Dashboard Container -->
+    <div class="app-container" id="app-container" style="display: none;">
         <!-- Header -->
         <header class="app-header">
             <div class="brand-section">
@@ -40,6 +101,10 @@
             </nav>
             
             <div class="header-actions">
+                <div class="user-badge" id="user-badge-display" style="display: none;">
+                    <span class="user-avatar-text" id="user-avatar-lbl">U</span>
+                    <span class="user-name-text" id="user-name-lbl">User</span>
+                </div>
                 <div class="connection-status">
                     <span class="status-dot green" id="status-indicator"></span>
                     <span class="status-text" id="status-label">Server Connected</span>
@@ -47,6 +112,11 @@
                 <button id="connect-broker-btn" class="btn btn-primary" aria-label="Connect new brokerage account">
                     <svg class="icon-plus" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
                     Connect Broker
+                </button>
+                <button id="logout-btn" class="btn btn-secondary btn-icon-only" aria-label="Log out of account" title="Logout">
+                    <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                    </svg>
                 </button>
             </div>
         </header>

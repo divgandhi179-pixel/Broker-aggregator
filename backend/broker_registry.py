@@ -13,23 +13,26 @@ ADAPTER_MAP = {
 
 class BrokerRegistry:
     def __init__(self):
-        self.brokers = {}
+        self.brokers = {} # key: (user_id, name)
         
-    def register(self, name:str, **credentials):
+    def register(self, user_id: int, name: str, **credentials):
         if name not in ADAPTER_MAP:
             raise ValueError(f"Unknown Broker: {name}")
-        self.brokers[name] = ADAPTER_MAP[name](**credentials)
-        print(f"{name} registered successfully")
+        self.brokers[(user_id, name)] = ADAPTER_MAP[name](**credentials)
+        print(f"{name} registered successfully for user {user_id}")
         
-    def unregister(self, name:str):
-        if name in self.brokers:
-            del self.brokers[name]
-            print(f"{name} unregistered successfully")
+    def unregister(self, user_id: int, name: str):
+        key = (user_id, name)
+        if key in self.brokers:
+            del self.brokers[key]
+            print(f"{name} unregistered successfully for user {user_id}")
         
-    def get(self, name:str):
-        if name not in self.brokers:
+    def get(self, user_id: int, name: str):
+        key = (user_id, name)
+        if key not in self.brokers:
             raise ValueError(f"Broker {name} is not registered")
-        return self.brokers[name]
+        return self.brokers[key]
     
-    def all(self):
-        return self.brokers.items() 
+    def all_for_user(self, user_id: int):
+        return [(name, broker) for (uid, name), broker in self.brokers.items() if uid == user_id]
+ 

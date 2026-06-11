@@ -1,11 +1,47 @@
+import sys
+import os
 from fastapi.testclient import TestClient
+
+# Ensure root directory is on python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from backend.database import init_db, SessionLocal, User, Broker
 from backend.main import app, registry
 
+# Initialize database schema for testing
+init_db()
 
 client = TestClient(app)
+headers = {}
+
+def setup_auth():
+    global headers
+    # Ensure test user does not exist in DB from previous runs
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "testuser@example.com").first()
+        if user:
+            db.delete(user)
+            db.commit()
+    finally:
+        db.close()
+
+    # Register new user
+    register_payload = {
+        "email": "testuser@example.com",
+        "username": "testuser",
+        "password": "testpassword123"
+    }
+    response = client.post("/api/auth/register", json=register_payload)
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+# Run setup_auth before executing tests
+setup_auth()
 
 def test_get_brokers():
-    response = client.get("/api/brokers")
+    response = client.get("/api/brokers", headers=headers)
     assert response.status_code == 200
     data = response.json()
     assert "supported" in data
@@ -18,7 +54,7 @@ def test_get_brokers():
 def test_register_and_unregister_broker():
     # Clean registry first
     try:
-        client.delete("/api/brokers/Alpaca")
+        client.delete("/api/brokers/Alpaca", headers=headers)
     except:
         pass
         
@@ -30,26 +66,26 @@ def test_register_and_unregister_broker():
             "secret_key": "test_secret"
         }
     }
-    response = client.post("/api/brokers", json=payload)
+    response = client.post("/api/brokers", json=payload, headers=headers)
     assert response.status_code == 200
     assert response.json()["status"] == "success"
     
     # Check that it is active
-    response = client.get("/api/brokers")
+    response = client.get("/api/brokers", headers=headers)
     assert "Alpaca" in response.json()["active"]
     
     # Get Portfolios
-    response = client.get("/api/portfolios")
+    response = client.get("/api/portfolios", headers=headers)
     assert response.status_code == 200
     portfolios_data = response.json()
     assert portfolios_data["summary"]["active_count"] >= 1
     
     # Get Positions
-    response = client.get("/api/positions")
+    response = client.get("/api/positions", headers=headers)
     assert response.status_code == 200
     
     # Get Quote
-    response = client.get("/api/quote/Alpaca/AAPL")
+    response = client.get("/api/quote/Alpaca/AAPL", headers=headers)
     assert response.status_code == 200
     assert response.json()["symbol"] == "AAPL"
     
@@ -60,7 +96,7 @@ def test_register_and_unregister_broker():
         "qty": 2,
         "side": "BUY"
     }
-    response = client.post("/api/orders", json=order_payload)
+    response = client.post("/api/orders", json=order_payload, headers=headers)
     assert response.status_code == 200
     order_data = response.json()
     assert order_data["status"] == "placed"
@@ -73,27 +109,27 @@ def test_register_and_unregister_broker():
         "qty": 1,
         "side": "SELL"
     }
-    response = client.post("/api/orders", json=order_payload)
+    response = client.post("/api/orders", json=order_payload, headers=headers)
     assert response.status_code == 200
     
     # Unregister Alpaca
-    response = client.delete("/api/brokers/Alpaca")
+    response = client.delete("/api/brokers/Alpaca", headers=headers)
     assert response.status_code == 200
     
     # Verify not active
-    response = client.get("/api/brokers")
+    response = client.get("/api/brokers", headers=headers)
     assert "Alpaca" not in response.json()["active"]
 
 def test_ipo_endpoints():
     # 1. Get IPOs
-    response = client.get("/api/ipos")
+    response = client.get("/api/ipos", headers=headers)
     assert response.status_code == 200
     ipos_data = response.json()
     assert len(ipos_data) >= 3
     assert any(i["symbol"] == "SWIGGY" for i in ipos_data)
     
     # 2. Get applications
-    response = client.get("/api/ipos/applications")
+    response = client.get("/api/ipos/applications", headers=headers)
     assert response.status_code == 200
     
     # Register mock broker to test apply endpoint
@@ -104,7 +140,7 @@ def test_ipo_endpoints():
             "access_token": "test_token"
         }
     }
-    client.post("/api/brokers", json=register_payload)
+    client.post("/api/brokers", json=register_payload, headers=headers)
     
     # Apply for IPO
     apply_payload = {
@@ -114,24 +150,24 @@ def test_ipo_endpoints():
         "bid_price": 385.0,
         "upi_id": "test@upi"
     }
-    response = client.post("/api/ipos/apply", json=apply_payload)
+    response = client.post("/api/ipos/apply", json=apply_payload, headers=headers)
     assert response.status_code == 200
     app_data = response.json()
     assert app_data["status"] == "Applied"
     assert app_data["shares"] == 76
     
     # Verify application list
-    response = client.get("/api/ipos/applications")
+    response = client.get("/api/ipos/applications", headers=headers)
     assert response.status_code == 200
     apps = response.json()
     assert any(a["id"] == app_data["id"] for a in apps)
     
     # Cancel bid
-    response = client.delete(f"/api/ipos/applications/{app_data['id']}")
+    response = client.delete(f"/api/ipos/applications/{app_data['id']}", headers=headers)
     assert response.status_code == 200
     
     # Clean up broker
-    client.delete("/api/brokers/Zerodha")
+    client.delete("/api/brokers/Zerodha", headers=headers)
 
 if __name__ == "__main__":
     try:

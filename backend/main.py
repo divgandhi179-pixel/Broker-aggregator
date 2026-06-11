@@ -3,29 +3,47 @@ import json
 import asyncio
 import datetime
 from typing import Dict, Any, List
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, status, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
 
 from backend.broker_registry import BrokerRegistry
+from backend.database import get_db, init_db, SessionLocal, User, Broker, Order, IPOApplication
+from backend.auth import (
+    get_current_user,
+    get_ws_user_helper,
+    verify_password,
+    get_password_hash,
+    create_access_token,
+    validate_email_address,
+)
 
-app = FastAPI(title="Broker Aggregator API")
+app = FastAPI(title="Apex Broker Aggregator API")
 
-# Registry instance
+# Add CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Registry instance for active adapter connections
 registry = BrokerRegistry()
 
-# Paths for persistence (Vercel has read-only filesystem, use /tmp if on Vercel)
-if os.environ.get("VERCEL"):
-    BROKERS_FILE = "/tmp/registered_brokers.json"
-    HISTORY_FILE = "/tmp/order_history.json"
-    IPO_APPLICATIONS_FILE = "/tmp/ipo_applications.json"
-else:
-    os.makedirs("data", exist_ok=True)
-    BROKERS_FILE = "data/registered_brokers.json"
-    HISTORY_FILE = "data/order_history.json"
-    IPO_APPLICATIONS_FILE = "data/ipo_applications.json"
+# Pydantic Schemas
+class UserRegister(BaseModel):
+    email: str
+    username: str
+    password: str
 
+class UserLogin(BaseModel):
+    email: str
+    password: str
 
 class BrokerConfig(BaseModel):
     broker: str
@@ -45,113 +63,180 @@ class IPOApplyRequest(BaseModel):
     bid_price: float
     upi_id: str
 
-# Ensure persistence files exist
-def init_files():
-    if not os.path.exists(BROKERS_FILE):
-        with open(BROKERS_FILE, "w") as f:
-            json.dump({}, f)
-    if not os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "w") as f:
-            json.dump([], f)
-    if not os.path.exists(IPO_APPLICATIONS_FILE):
-        with open(IPO_APPLICATIONS_FILE, "w") as f:
-            json.dump([], f)
 
-def load_registered_brokers():
+# Initialize and load active sessions on startup
+def load_all_active_brokers():
+    db = SessionLocal()
     try:
-        with open(BROKERS_FILE, "r") as f:
-            data = json.load(f)
-            for name, creds in data.items():
-                try:
-                    registry.register(name, **creds)
-                except Exception as e:
-                    print(f"Failed to register broker {name} from config: {e}")
-    except Exception as e:
-        print(f"Error loading registered brokers: {e}")
+        db_brokers = db.query(Broker).all()
+        for b in db_brokers:
+            try:
+                registry.register(b.user_id, b.broker_name, **b.credentials)
+            except Exception as e:
+                print(f"Failed to register broker {b.broker_name} for user {b.user_id} on startup: {e}")
+    finally:
+        db.close()
 
-def save_broker_config(name: str, creds: Dict[str, Any]):
-    try:
-        with open(BROKERS_FILE, "r") as f:
-            data = json.load(f)
-        data[name] = creds
-        with open(BROKERS_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Error saving broker config: {e}")
 
-def remove_broker_config(name: str):
-    try:
-        with open(BROKERS_FILE, "r") as f:
-            data = json.load(f)
-        if name in data:
-            del data[name]
-        with open(BROKERS_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Error removing broker config: {e}")
-
-def load_order_history() -> List[Dict[str, Any]]:
-    try:
-        with open(HISTORY_FILE, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error loading order history: {e}")
-        return []
-
-def add_order_to_history(order: Dict[str, Any]):
-    try:
-        history = load_order_history()
-        history.insert(0, order) # Add to beginning (latest first)
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(history, f, indent=4)
-    except Exception as e:
-        print(f"Error adding order to history: {e}")
-
-# Initialize files immediately on load
-init_files()
-
-# Initialize and load config on startup
 @app.on_event("startup")
 async def startup_event():
-    load_registered_brokers()
+    # Create tables
+    init_db()
+    # Load broker sessions
+    load_all_active_brokers()
+    # Start Websocket update loop
     asyncio.create_task(broadcast_updates_loop())
 
+
+# --- AUTHENTICATION ENDPOINTS ---
+
+@app.post("/api/auth/register")
+async def register_user(req: UserRegister, db: Session = Depends(get_db)):
+    # 1. Validate email syntax
+    try:
+        email_normalized = validate_email_address(req.email)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid email format: {str(e)}"
+        )
+    
+    # 2. Check if username or email already exists
+    existing_user = db.query(User).filter(User.email == email_normalized).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An account with this email already exists."
+        )
+    
+    if len(req.password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 6 characters long."
+        )
+
+    # 3. Create user
+    hashed_pwd = get_password_hash(req.password)
+    new_user = User(
+        email=email_normalized,
+        username=req.username,
+        password_hash=hashed_pwd
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Generate token
+    token = create_access_token(data={"sub": new_user.email})
+    return {
+        "status": "success",
+        "message": "User registered successfully.",
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {"email": new_user.email, "username": new_user.username}
+    }
+
+
+@app.post("/api/auth/login")
+async def login_user(req: UserLogin, db: Session = Depends(get_db)):
+    # 1. Find user
+    user = db.query(User).filter(User.email == req.email.strip()).first()
+    if not user or not verify_password(req.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password."
+        )
+        
+    token = create_access_token(data={"sub": user.email})
+    return {
+        "status": "success",
+        "message": "Logged in successfully.",
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {"email": user.email, "username": user.username}
+    }
+
+
+# --- SECURED BROKER MANAGEMENT ENDPOINTS ---
+
 @app.get("/api/brokers")
-async def get_brokers():
-    # Return list of all available brokers and which ones are currently active
+async def get_brokers(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     supported = ["Zerodha", "Alpaca", "Groww", "Motilal Oswal"]
-    active = [name for name, _ in registry.all()]
+    # Get active brokers registered in database for this user
+    user_brokers = db.query(Broker).filter(Broker.user_id == current_user.id).all()
+    active = [b.broker_name for b in user_brokers]
     return {
         "supported": supported,
         "active": active
     }
 
+
 @app.post("/api/brokers")
-async def register_broker(config: BrokerConfig):
-    # Validate broker name
+async def register_broker(
+    config: BrokerConfig,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     if config.broker not in ["Zerodha", "Alpaca", "Groww", "Motilal Oswal"]:
         raise HTTPException(status_code=400, detail=f"Unsupported broker: {config.broker}")
     
+    # Check if already registered in DB
+    existing = db.query(Broker).filter(
+        Broker.user_id == current_user.id,
+        Broker.broker_name == config.broker
+    ).first()
+    
     try:
-        registry.register(config.broker, **config.credentials)
-        save_broker_config(config.broker, config.credentials)
-        return {"status": "success", "message": f"{config.broker} broker registered and persisted."}
+        # Register in registry cache
+        registry.register(current_user.id, config.broker, **config.credentials)
+        
+        # Save to DB
+        if existing:
+            existing.credentials = config.credentials
+        else:
+            new_broker = Broker(
+                user_id=current_user.id,
+                broker_name=config.broker
+            )
+            new_broker.credentials = config.credentials
+            db.add(new_broker)
+        
+        db.commit()
+        return {"status": "success", "message": f"{config.broker} broker registered successfully."}
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.delete("/api/brokers/{name}")
-async def unregister_broker(name: str):
+async def unregister_broker(
+    name: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(Broker).filter(
+        Broker.user_id == current_user.id,
+        Broker.broker_name == name
+    ).first()
+    
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Broker {name} is not connected.")
+        
     try:
-        registry.unregister(name)
-        remove_broker_config(name)
+        # Unregister from registry
+        registry.unregister(current_user.id, name)
+        # Delete from DB
+        db.delete(existing)
+        db.commit()
         return {"status": "success", "message": f"{name} broker disconnected."}
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/api/portfolios")
-async def get_all_portfolios():
-    # Gather portfolios from active brokers concurrently
-    active_brokers = list(registry.all())
+
+# Helper function to get portfolios for a specific user
+async def get_all_portfolios_for_user(user: User, db: Session) -> dict:
+    active_brokers = registry.all_for_user(user.id)
     if not active_brokers:
         return {"portfolios": [], "summary": {"total_value": 0, "active_count": 0}}
         
@@ -175,7 +260,6 @@ async def get_all_portfolios():
             })
         else:
             portfolios_data.append(res)
-            # Standardize total_value as float
             try:
                 total_aggregate_value += float(res.get("total_value", 0.0))
             except:
@@ -189,10 +273,21 @@ async def get_all_portfolios():
         }
     }
 
+
+@app.get("/api/portfolios")
+async def get_all_portfolios(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return await get_all_portfolios_for_user(current_user, db)
+
+
 @app.get("/api/positions")
-async def get_all_positions():
-    # Gather positions from active brokers concurrently
-    active_brokers = list(registry.all())
+async def get_all_positions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    active_brokers = registry.all_for_user(current_user.id)
     if not active_brokers:
         return []
         
@@ -213,20 +308,30 @@ async def get_all_positions():
                 
     return positions_data
 
+
 @app.get("/api/quote/{broker_name}/{symbol}")
-async def get_broker_quote(broker_name: str, symbol: str):
+async def get_broker_quote(
+    broker_name: str,
+    symbol: str,
+    current_user: User = Depends(get_current_user)
+):
     try:
-        broker = registry.get(broker_name)
+        broker = registry.get(current_user.id, broker_name)
         quote = await broker.get_quote(symbol)
         return quote
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+
 @app.post("/api/orders")
-async def place_order(order: OrderRequest):
+async def place_order(
+    order: OrderRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     try:
-        broker = registry.get(order.broker)
-        # Execute order on the broker (updates its internal holdings)
+        broker = registry.get(current_user.id, order.broker)
+        # Execute order on the adapter
         res = await broker.place_order(
             symbol=order.symbol,
             qty=order.qty,
@@ -234,25 +339,58 @@ async def place_order(order: OrderRequest):
             order_type=order.order_type
         )
         
-        # Add details to order structure for logs
-        order_log = res.copy()
-        order_log["timestamp"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Fetch quote to record execution price
+        # Get quote for exact execution price
         quote = await broker.get_quote(order.symbol)
-        order_log["execution_price"] = quote["ltp"]
+        exec_price = quote["ltp"]
         
-        add_order_to_history(order_log)
+        # Save to database
+        db_order = Order(
+            user_id=current_user.id,
+            broker_name=order.broker,
+            order_id=res["order_id"],
+            symbol=order.symbol.upper(),
+            qty=order.qty,
+            side=order.side.upper(),
+            execution_price=exec_price,
+            status="placed",
+            timestamp=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        db.add(db_order)
+        db.commit()
+        
+        order_log = res.copy()
+        order_log["timestamp"] = db_order.timestamp
+        order_log["execution_price"] = exec_price
+        
         return order_log
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.get("/api/history")
-async def get_history():
-    return load_order_history()
+async def get_history(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    orders = db.query(Order).filter(Order.user_id == current_user.id).order_by(Order.id.desc()).all()
+    return [
+        {
+            "broker": o.broker_name,
+            "order_id": o.order_id,
+            "symbol": o.symbol,
+            "qty": o.qty,
+            "side": o.side,
+            "execution_price": o.execution_price,
+            "status": o.status,
+            "timestamp": o.timestamp
+        }
+        for o in orders
+    ]
 
 
-# Mock IPOs Database
+# --- IPO PORTAL ENDPOINTS ---
+
 MOCK_IPOS = [
     {
         "company_name": "Ola Electric Mobility Ltd",
@@ -308,38 +446,46 @@ MOCK_IPOS = [
     }
 ]
 
-def load_ipo_applications() -> List[Dict[str, Any]]:
-    try:
-        with open(IPO_APPLICATIONS_FILE, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error loading IPO applications: {e}")
-        return []
-
-def save_ipo_applications(apps: List[Dict[str, Any]]):
-    try:
-        with open(IPO_APPLICATIONS_FILE, "w") as f:
-            json.dump(apps, f, indent=4)
-    except Exception as e:
-        print(f"Error saving IPO applications: {e}")
-
 @app.get("/api/ipos")
 async def get_ipos():
     return MOCK_IPOS
 
+
 @app.get("/api/ipos/applications")
-async def get_ipo_applications():
-    return load_ipo_applications()
+async def get_ipo_applications(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    apps = db.query(IPOApplication).filter(IPOApplication.user_id == current_user.id).order_by(IPOApplication.id.desc()).all()
+    return [
+        {
+            "id": f"APP{a.id:06d}",
+            "broker": a.broker_name,
+            "ipo_symbol": a.ipo_symbol,
+            "ipo_name": a.ipo_name,
+            "lots": a.lots,
+            "shares": a.shares,
+            "bid_price": a.bid_price,
+            "amount": a.amount,
+            "upi_id": a.upi_id,
+            "status": a.status,
+            "timestamp": a.timestamp
+        }
+        for a in apps
+    ]
+
 
 @app.post("/api/ipos/apply")
-async def apply_ipo(req: IPOApplyRequest):
-    # Validate broker is connected
+async def apply_ipo(
+    req: IPOApplyRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     try:
-        broker = registry.get(req.broker)
-    except Exception as e:
+        broker = registry.get(current_user.id, req.broker)
+    except Exception:
         raise HTTPException(status_code=400, detail=f"Broker {req.broker} is not connected. Connect the broker first.")
 
-    # Find the IPO details
     ipo = next((i for i in MOCK_IPOS if i["symbol"] == req.ipo_symbol), None)
     if not ipo:
         raise HTTPException(status_code=400, detail=f"IPO {req.ipo_symbol} not found.")
@@ -347,70 +493,103 @@ async def apply_ipo(req: IPOApplyRequest):
     if ipo["status"] != "OPEN":
         raise HTTPException(status_code=400, detail=f"IPO {req.ipo_symbol} is not open for bidding.")
 
-    # Validate price is within range
     if req.bid_price < ipo["min_price"] or req.bid_price > ipo["max_price"]:
         raise HTTPException(status_code=400, detail=f"Bid price must be between {ipo['price_range']}.")
 
-    # Calculate bid amount
     shares = req.lots * ipo["lot_size"]
     amount = shares * req.bid_price
 
-    # Generate a unique application ID
-    import time
-    app_id = f"APP{int(time.time() * 1000) % 1000000:06d}"
-    
-    # Create application object
-    app_obj = {
-        "id": app_id,
-        "broker": req.broker,
-        "ipo_symbol": req.ipo_symbol,
-        "ipo_name": ipo["company_name"],
-        "lots": req.lots,
-        "shares": shares,
-        "bid_price": req.bid_price,
-        "amount": round(amount, 2),
-        "upi_id": req.upi_id,
-        "status": "Applied",
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
+    try:
+        app_obj = IPOApplication(
+            user_id=current_user.id,
+            broker_name=req.broker,
+            ipo_symbol=req.ipo_symbol,
+            ipo_name=ipo["company_name"],
+            lots=req.lots,
+            shares=shares,
+            bid_price=req.bid_price,
+            amount=round(amount, 2),
+            upi_id=req.upi_id,
+            status="Applied",
+            timestamp=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        db.add(app_obj)
+        db.commit()
+        db.refresh(app_obj)
 
-    # Persist
-    apps = load_ipo_applications()
-    apps.insert(0, app_obj)
-    save_ipo_applications(apps)
+        return {
+            "id": f"APP{app_obj.id:06d}",
+            "broker": app_obj.broker_name,
+            "ipo_symbol": app_obj.ipo_symbol,
+            "ipo_name": app_obj.ipo_name,
+            "lots": app_obj.lots,
+            "shares": app_obj.shares,
+            "bid_price": app_obj.bid_price,
+            "amount": app_obj.amount,
+            "upi_id": app_obj.upi_id,
+            "status": app_obj.status,
+            "timestamp": app_obj.timestamp
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
-    return app_obj
 
 @app.delete("/api/ipos/applications/{app_id}")
-async def cancel_ipo_application(app_id: str):
-    apps = load_ipo_applications()
-    filtered_apps = [a for a in apps if a["id"] != app_id]
+async def cancel_ipo_application(
+    app_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Extract ID integer from code (e.g. APP000123 -> 123)
+        db_id = int(app_id.replace("APP", ""))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid application ID format.")
+        
+    app_obj = db.query(IPOApplication).filter(
+        IPOApplication.id == db_id,
+        IPOApplication.user_id == current_user.id
+    ).first()
     
-    if len(apps) == len(filtered_apps):
+    if not app_obj:
         raise HTTPException(status_code=404, detail="IPO application not found.")
         
-    save_ipo_applications(filtered_apps)
-    return {"status": "success", "message": f"IPO bid {app_id} cancelled successfully."}
+    try:
+        db.delete(app_obj)
+        db.commit()
+        return {"status": "success", "message": f"IPO bid {app_id} cancelled successfully."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
+
+# --- WEBSOCKET CLIENT SYNC ---
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: Dict[int, List[WebSocket]] = {} # user_id -> List[WebSocket]
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, user_id: int, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = []
+        self.active_connections[user_id].append(websocket)
 
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+    def disconnect(self, user_id: int, websocket: WebSocket):
+        if user_id in self.active_connections:
+            if websocket in self.active_connections[user_id]:
+                self.active_connections[user_id].remove(websocket)
+            if not self.active_connections[user_id]:
+                del self.active_connections[user_id]
 
-    async def broadcast(self, message: dict):
-        for connection in list(self.active_connections):
-            try:
-                await connection.send_json(message)
-            except Exception:
-                self.disconnect(connection)
+    async def broadcast_to_user(self, user_id: int, message: dict):
+        if user_id in self.active_connections:
+            for connection in list(self.active_connections[user_id]):
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    self.disconnect(user_id, connection)
 
 manager = ConnectionManager()
 
@@ -419,40 +598,79 @@ async def broadcast_updates_loop():
     while True:
         await asyncio.sleep(2)
         if manager.active_connections:
+            db = SessionLocal()
             try:
-                portfolios_data = await get_all_portfolios()
-                await manager.broadcast({
-                    "type": "update",
-                    "portfolios": portfolios_data
-                })
+                for user_id in list(manager.active_connections.keys()):
+                    try:
+                        user = db.query(User).filter(User.id == user_id).first()
+                        if user:
+                            portfolios_data = await get_all_portfolios_for_user(user, db)
+                            await manager.broadcast_to_user(user_id, {
+                                "type": "update",
+                                "portfolios": portfolios_data
+                            })
+                    except Exception as e:
+                        print(f"Error in websocket broadcast for user {user_id}: {e}")
             except Exception as e:
                 print(f"Error in broadcast loop: {e}")
+            finally:
+                db.close()
 
 
 @app.websocket("/api/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
+    db = SessionLocal()
+    user = None
     try:
-        # Send initial data immediately
-        portfolios_data = await get_all_portfolios()
-        history_data = await get_history()
+        user = get_ws_user_helper(token, db)
+    except Exception as e:
+        # Reject connection if token is invalid
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        db.close()
+        return
+
+    await manager.connect(user.id, websocket)
+    try:
+        # Send initial user portfolios & order history
+        portfolios_data = await get_all_portfolios_for_user(user, db)
+        
+        # Format history data
+        orders = db.query(Order).filter(Order.user_id == user.id).order_by(Order.id.desc()).all()
+        history_data = [
+            {
+                "broker": o.broker_name,
+                "order_id": o.order_id,
+                "symbol": o.symbol,
+                "qty": o.qty,
+                "side": o.side,
+                "execution_price": o.execution_price,
+                "status": o.status,
+                "timestamp": o.timestamp
+            }
+            for o in orders
+        ]
+        
         await websocket.send_json({
             "type": "initial",
             "portfolios": portfolios_data,
             "history": history_data
         })
+        
         while True:
-            # Keep connection open and respond to client pings
+            # Maintain active connection, respond to client pings
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        manager.disconnect(user.id, websocket)
     except Exception as e:
-        print(f"WebSocket endpoint error: {e}")
-        manager.disconnect(websocket)
+        print(f"WebSocket endpoint error for user {user.id if user else 'unknown'}: {e}")
+        if user:
+            manager.disconnect(user.id, websocket)
+    finally:
+        db.close()
 
-# Mount static files at root
-# Ensure static directory exists
+
+# Mount static assets at root
 os.makedirs("static", exist_ok=True)
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
