@@ -1,6 +1,7 @@
 import asyncio
-from adapters.zerodha_adapter import ZerodhaAdapter
-from adapters.alpaca_adapter import AlpacaAdapter
+from backend.adapters.zerodha_adapter import ZerodhaAdapter
+from backend.adapters.alpaca_adapter import AlpacaAdapter
+
 
 async def main():
     brokers= [

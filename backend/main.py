@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
-from broker_registry import BrokerRegistry
+from backend.broker_registry import BrokerRegistry
 
 app = FastAPI(title="Broker Aggregator API")
 
@@ -21,9 +21,11 @@ if os.environ.get("VERCEL"):
     HISTORY_FILE = "/tmp/order_history.json"
     IPO_APPLICATIONS_FILE = "/tmp/ipo_applications.json"
 else:
-    BROKERS_FILE = "registered_brokers.json"
-    HISTORY_FILE = "order_history.json"
-    IPO_APPLICATIONS_FILE = "ipo_applications.json"
+    os.makedirs("data", exist_ok=True)
+    BROKERS_FILE = "data/registered_brokers.json"
+    HISTORY_FILE = "data/order_history.json"
+    IPO_APPLICATIONS_FILE = "data/ipo_applications.json"
+
 
 class BrokerConfig(BaseModel):
     broker: str

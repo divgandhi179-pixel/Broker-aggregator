@@ -1,7 +1,8 @@
-from adapters.zerodha_adapter import ZerodhaAdapter
-from adapters.alpaca_adapter import AlpacaAdapter
-from adapters.groww_adapter import GrowwAdapter
-from adapters.motilal_oswal_adapter import MotilalOswalAdapter
+from backend.adapters.zerodha_adapter import ZerodhaAdapter
+from backend.adapters.alpaca_adapter import AlpacaAdapter
+from backend.adapters.groww_adapter import GrowwAdapter
+from backend.adapters.motilal_oswal_adapter import MotilalOswalAdapter
+
 
 ADAPTER_MAP = {
     "Zerodha": ZerodhaAdapter,

@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
-from main import app, registry
+from backend.main import app, registry
+
 
 client = TestClient(app)
 

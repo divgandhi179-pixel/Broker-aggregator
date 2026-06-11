@@ -4,7 +4,9 @@ __pycache__/
 *.pyc
 .DS_Store
 .vercel
+data/
 registered_brokers.json
 order_history.json
 ipo_applications.json
+
 

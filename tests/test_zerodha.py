@@ -1,5 +1,6 @@
 import asyncio
-from adapters.zerodha_adapter import ZerodhaAdapter
+from backend.adapters.zerodha_adapter import ZerodhaAdapter
+
 
 async def main():
     broker = ZerodhaAdapter(api_key="fake key",access_token="fake token")

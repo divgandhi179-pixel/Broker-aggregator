@@ -1,6 +1,7 @@
 import time
 import random
-from adapters.base_adapter import BrokerAdapter
+from backend.adapters.base_adapter import BrokerAdapter
+
 
 
 class ZerodhaAdapter(BrokerAdapter):
